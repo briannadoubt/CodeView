@@ -5,18 +5,20 @@ on:
   push:
     branches: ["main", "codex/**"]
     paths:
+      - ".github/workflows/**"
       - "Sources/**"
       - "Package.swift"
       - "Demo/**"
   pull_request:
     paths:
+      - ".github/workflows/**"
       - "Sources/**"
       - "Package.swift"
       - "Demo/**"
 
 jobs:
   preview-build:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - name: Build Demo App
