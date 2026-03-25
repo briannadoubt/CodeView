@@ -1,0 +1,23 @@
+name: Demo Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "codex/**"]
+    paths:
+      - "Sources/**"
+      - "Package.swift"
+      - "Demo/**"
+  pull_request:
+    paths:
+      - "Sources/**"
+      - "Package.swift"
+      - "Demo/**"
+
+jobs:
+  preview-build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Demo App
+        run: swift build --product CodeViewDemoMacOS
