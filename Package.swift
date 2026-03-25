@@ -21,7 +21,7 @@ let package = Package(
         .executable(name: "CodeViewDemoMacOS", targets: ["CodeViewDemoMacOS"])
     ],
     dependencies: [
-        .package(url: "https://github.com/briannadoubt/swift-git.git", branch: "main"),
+        .package(url: "https://github.com/briannadoubt/swift-git.git", exact: "0.1.1"),
         .package(url: "https://github.com/tree-sitter/swift-tree-sitter", from: "0.9.0"),
         .package(url: "https://github.com/simonbs/TreeSitterLanguages", from: "0.1.10")
     ],
