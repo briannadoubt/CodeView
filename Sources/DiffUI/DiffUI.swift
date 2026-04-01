@@ -87,6 +87,7 @@ public struct DiffSurfaceView: View {
     }
 
     public var body: some View {
+        let fileIDs = files.map(\.id)
         navigationLayoutStrategy.makeLayout(
             sidebar: {
                 AnyView(
@@ -104,7 +105,7 @@ public struct DiffSurfaceView: View {
                 AnyView(
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
-                            ForEach(renderedFiles, id: \.file.id) { rendered in
+                            ForEach(renderedFiles) { rendered in
                                 Section {
                                     fileContent(rendered: rendered)
                                 } header: {
@@ -123,11 +124,8 @@ public struct DiffSurfaceView: View {
                         }
                     }
                     .navigationTitle("CodeView")
-                    .task {
-                        await loadContents()
-                    }
-                    .task(id: contents.keys.sorted()) {
-                        await prewarmVisibleLanguages()
+                    .task(id: fileIDs) {
+                        await reloadContents()
                     }
                     .toolbar {
                         ToolbarItemGroup {
@@ -156,7 +154,7 @@ public struct DiffSurfaceView: View {
         )
     }
 
-    private var renderedFiles: [(file: DiffFile, output: DiffRenderOutput)] {
+    private var renderedFiles: [RenderedFile] {
         files.map { file in
             let projectedFile = projected(file: file)
             let rows = DiffCoreEngine.rows(
@@ -181,12 +179,16 @@ public struct DiffSurfaceView: View {
                 },
                 syntaxRuntime: syntaxRuntime
             )
-            return (file, output)
+            return RenderedFile(
+                file: file,
+                output: output,
+                surfaces: output.surfaces.filter { $0.fileID == file.id }
+            )
         }
     }
 
     @ViewBuilder
-    private func fileContent(rendered: (file: DiffFile, output: DiffRenderOutput)) -> some View {
+    private func fileContent(rendered: RenderedFile) -> some View {
         let expandHiddenContext: @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void = { hiddenBlock, action in
             switch action {
             case .expandUp:
@@ -220,7 +222,7 @@ public struct DiffSurfaceView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
             case .textSurface:
-                ForEach(rendered.output.surfaces.filter { $0.fileID == rendered.file.id }) { surface in
+                ForEach(rendered.surfaces) { surface in
                     renderer.render(
                         surface: surface,
                         onSelectionChanged: { selectionChanged(surface, $0) },
@@ -246,22 +248,24 @@ public struct DiffSurfaceView: View {
         return copy
     }
 
-    private func loadContents() async {
+    private func reloadContents() async {
+        var loadedContents: [DiffFile.ID: String] = [:]
+        loadedContents.reserveCapacity(files.count)
         for file in files {
-            contents[file.id] = await fileContentsProvider(file.id) ?? file.flattenedText
+            loadedContents[file.id] = await fileContentsProvider(file.id) ?? file.flattenedText
+        }
+        await MainActor.run {
+            contents = loadedContents
         }
     }
 
-    private func prewarmVisibleLanguages() async {
-        for file in files {
-            let language = syntaxRuntime.resolveLanguage(
-                path: file.path,
-                alias: nil,
-                shebang: nil,
-                configuration: syntaxConfiguration
-            )
-            let lineCount = (contents[file.id] ?? file.flattenedText).split(separator: "\n", omittingEmptySubsequences: false).count
-            _ = SyntaxPrewarmRequest(language: language, visibleLineRange: 0..<lineCount)
+    private struct RenderedFile: Identifiable {
+        let file: DiffFile
+        let output: DiffRenderOutput
+        let surfaces: [CodeTextSurfaceModel]
+
+        var id: DiffFile.ID {
+            file.id
         }
     }
 }
