@@ -83,7 +83,7 @@ let package = Package(
         ),
         .target(
             name: "DiffPlatformAdapters",
-            dependencies: ["DiffRendering"]
+            dependencies: ["DiffRendering", "DiffState"]
         ),
         .target(
             name: "DiffUI",
@@ -119,6 +119,10 @@ let package = Package(
         .testTarget(
             name: "DiffAdaptersTests",
             dependencies: ["DiffAdapters", "GitDiffAdapters", "DiffCore", "DiffRendering", "SyntaxCore"]
+        ),
+        .testTarget(
+            name: "DiffPlatformAdaptersTests",
+            dependencies: ["DiffPlatformAdapters", "DiffRendering", "DiffCore", "DiffState"]
         )
     ]
 )

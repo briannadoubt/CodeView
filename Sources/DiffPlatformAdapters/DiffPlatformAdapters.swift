@@ -1,5 +1,6 @@
 import DiffCore
 import DiffRendering
+import DiffState
 import SyntaxCore
 
 #if canImport(SwiftUI)
@@ -13,75 +14,153 @@ import UIKit
 
 public protocol CodeTextSurfaceRenderer: Sendable {
     associatedtype Body: View
+    @MainActor
     @ViewBuilder
     func render(
         surface: CodeTextSurfaceModel,
+        onSelectionChanged: @escaping @MainActor @Sendable (DiffTextSelection?) -> Void,
         onExpandHiddenContext: @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
     ) -> Body
 }
 
+public extension CodeTextSurfaceRenderer {
+    @MainActor
+    @ViewBuilder
+    func render(
+        surface: CodeTextSurfaceModel,
+        onExpandHiddenContext: @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
+    ) -> some View {
+        render(
+            surface: surface,
+            onSelectionChanged: { _ in },
+            onExpandHiddenContext: onExpandHiddenContext
+        )
+    }
+}
+
 public struct AnyCodeTextSurfaceRenderer: Sendable {
-    private let builder: @Sendable (CodeTextSurfaceModel, @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void) -> AnyView
+    private let builder: @MainActor @Sendable (
+        CodeTextSurfaceModel,
+        @escaping @MainActor @Sendable (DiffTextSelection?) -> Void,
+        @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
+    ) -> AnyView
 
     public init<R: CodeTextSurfaceRenderer>(_ renderer: R) {
-        self.builder = { (surface: CodeTextSurfaceModel, onExpandHiddenContext: @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void) in
-            AnyView(renderer.render(surface: surface, onExpandHiddenContext: onExpandHiddenContext))
+        self.builder = {
+            (surface: CodeTextSurfaceModel,
+             onSelectionChanged: @escaping @MainActor @Sendable (DiffTextSelection?) -> Void,
+             onExpandHiddenContext: @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void) in
+            AnyView(
+                renderer.render(
+                    surface: surface,
+                    onSelectionChanged: onSelectionChanged,
+                    onExpandHiddenContext: onExpandHiddenContext
+                )
+            )
         }
     }
 
+    @MainActor
+    public func render(
+        surface: CodeTextSurfaceModel,
+        onSelectionChanged: @escaping @MainActor @Sendable (DiffTextSelection?) -> Void,
+        onExpandHiddenContext: @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
+    ) -> AnyView {
+        builder(surface, onSelectionChanged, onExpandHiddenContext)
+    }
+
+    @MainActor
     public func render(
         surface: CodeTextSurfaceModel,
         onExpandHiddenContext: @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
     ) -> AnyView {
-        builder(surface, onExpandHiddenContext)
+        builder(surface, { _ in }, onExpandHiddenContext)
     }
+
 }
 
 public struct DefaultCodeTextSurfaceRenderer: CodeTextSurfaceRenderer {
     public init() {}
 
+    @MainActor
     public func render(
         surface: CodeTextSurfaceModel,
+        onSelectionChanged: @escaping @MainActor @Sendable (DiffTextSelection?) -> Void,
         onExpandHiddenContext: @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
     ) -> some View {
-        #if os(macOS)
-        MacCodeTextSurfaceView(surface: surface, onExpandHiddenContext: onExpandHiddenContext)
-            .frame(minHeight: 48)
-        #else
-        ScrollView([.horizontal, .vertical]) {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(surface.rows) { row in
-                    mobileRowView(row, onExpandHiddenContext: onExpandHiddenContext)
-                    .font(.system(.body, design: .monospaced))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
-                    .background(backgroundColor(for: row.backgroundStyle))
+        SegmentedCodeTextSurfaceView(
+            surface: surface,
+            onSelectionChanged: onSelectionChanged,
+            onExpandHiddenContext: onExpandHiddenContext
+        )
+        .frame(minHeight: CodeSurfaceMetrics.minimumHeight)
+    }
+}
+
+private enum CodeSurfaceMetrics {
+    static let minimumHeight: CGFloat = 48
+    static let fontSize: CGFloat = 13
+    static let hiddenButtonCornerRadius: CGFloat = 10
+    static let hiddenButtonSize: CGFloat = 38
+    static let hiddenControlSpacing: CGFloat = 8
+    static let hiddenRowLeading: CGFloat = 6
+    static let hiddenRowTrailing: CGFloat = 10
+    static let hiddenRowVertical: CGFloat = 3
+    static let gutterLeadingPadding: CGFloat = 8
+    static let gutterTrailingPadding: CGFloat = 12
+    static let textHorizontalPadding: CGFloat = 8
+    static let textVerticalInset: CGFloat = 8
+}
+
+private struct SegmentedCodeTextSurfaceView: View {
+    let layout: CodeTextSurfaceLayout
+    let onSelectionChanged: @MainActor @Sendable (DiffTextSelection?) -> Void
+    let onExpandHiddenContext: @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
+
+    init(
+        surface: CodeTextSurfaceModel,
+        onSelectionChanged: @escaping @MainActor @Sendable (DiffTextSelection?) -> Void,
+        onExpandHiddenContext: @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
+    ) {
+        self.layout = CodeTextSurfaceLayout(surface: surface)
+        self.onSelectionChanged = onSelectionChanged
+        self.onExpandHiddenContext = onExpandHiddenContext
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(layout.items) { item in
+                switch item {
+                case let .segment(segment):
+                    platformSegmentView(segment)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case let .hiddenContext(row):
+                    hiddenContextRowView(row)
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func platformSegmentView(_ segment: CodeTextSegment) -> some View {
+        #if os(macOS)
+        MacCodeTextSegmentView(
+            segment: segment,
+            onSelectionChanged: onSelectionChanged
+        )
+        #else
+        UIKitCodeTextSegmentView(
+            segment: segment,
+            onSelectionChanged: onSelectionChanged
+        )
         #endif
     }
 
     @ViewBuilder
-    private func mobileRowView(
-        _ row: DiffRenderableRow,
-        onExpandHiddenContext: @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
-    ) -> some View {
-        switch row.kind {
-        case .code:
-            HStack(alignment: .top, spacing: 12) {
-                Text(row.oldLineNumber.map(String.init) ?? "")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 40, alignment: .trailing)
-                Text(row.newLineNumber.map(String.init) ?? "")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 40, alignment: .trailing)
-                Text(verbatim: row.text.isEmpty ? " " : row.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            }
-        case let .hiddenContext(block):
-            HStack(spacing: 8) {
+    private func hiddenContextRowView(_ row: DiffRenderableRow) -> some View {
+        if case let .hiddenContext(block) = row.kind {
+            HStack(spacing: CodeSurfaceMetrics.hiddenControlSpacing) {
                 if let upControl = row.hiddenContextControls.first(where: { $0.action == .expandUp }) {
                     hiddenContextButton(upControl.title, action: {
                         Task { @MainActor in
@@ -103,7 +182,7 @@ public struct DefaultCodeTextSurfaceRenderer: CodeTextSurfaceRenderer {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        RoundedRectangle(cornerRadius: CodeSurfaceMetrics.hiddenButtonCornerRadius, style: .continuous)
                             .fill(hiddenBarFillColor())
                     )
                 }
@@ -116,23 +195,10 @@ public struct DefaultCodeTextSurfaceRenderer: CodeTextSurfaceRenderer {
                     })
                 }
             }
-            .padding(.leading, 6)
-            .padding(.trailing, 10)
-            .padding(.vertical, 3)
+            .padding(.leading, CodeSurfaceMetrics.hiddenRowLeading)
+            .padding(.trailing, CodeSurfaceMetrics.hiddenRowTrailing)
+            .padding(.vertical, CodeSurfaceMetrics.hiddenRowVertical)
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func backgroundColor(for style: DiffBackgroundStyle) -> some ShapeStyle {
-        switch style {
-        case .neutral:
-            return Color.clear
-        case .addition:
-            return Color.green.opacity(0.12)
-        case .deletion:
-            return Color.red.opacity(0.12)
-        case .hidden:
-            return Color.clear
         }
     }
 
@@ -142,9 +208,12 @@ public struct DefaultCodeTextSurfaceRenderer: CodeTextSurfaceRenderer {
             Text(title)
                 .font(.system(size: 12, weight: .semibold, design: .default))
                 .foregroundStyle(Color.secondary.opacity(0.96))
-                .frame(width: 38, height: 38)
+                .frame(
+                    width: CodeSurfaceMetrics.hiddenButtonSize,
+                    height: CodeSurfaceMetrics.hiddenButtonSize
+                )
                 .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: CodeSurfaceMetrics.hiddenButtonCornerRadius, style: .continuous)
                         .fill(hiddenBarFillColor())
                 )
         }
@@ -157,247 +226,191 @@ public struct DefaultCodeTextSurfaceRenderer: CodeTextSurfaceRenderer {
 }
 
 #if os(macOS)
-private struct MacCodeTextSurfaceView: NSViewRepresentable {
-    let surface: CodeTextSurfaceModel
-    let onExpandHiddenContext: @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
+private struct MacCodeTextSegmentView: NSViewRepresentable {
+    let segment: CodeTextSegment
+    let onSelectionChanged: @MainActor @Sendable (DiffTextSelection?) -> Void
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onExpandHiddenContext: onExpandHiddenContext)
+    func makeNSView(context: Context) -> MacCodeTextSegmentContainerView {
+        MacCodeTextSegmentContainerView()
     }
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = IntrinsicHeightScrollView()
+    func updateNSView(_ nsView: MacCodeTextSegmentContainerView, context: Context) {
+        nsView.update(segment: segment, onSelectionChanged: onSelectionChanged)
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        nsView: MacCodeTextSegmentContainerView,
+        context: Context
+    ) -> CGSize? {
+        nsView.fittingSize(for: proposal.width)
+    }
+}
+
+private final class MacCodeTextSegmentContainerView: NSView {
+    private let gutterView = MacCodeTextGutterView()
+    private let scrollView = NSScrollView()
+    private let textView = MacSelectableCodeTextView(frame: .zero)
+
+    private var segment: CodeTextSegment?
+    private var selectionHandler: (@MainActor @Sendable (DiffTextSelection?) -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setUpViews()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        fittingSize(for: bounds.width > 0 ? bounds.width : nil)
+    }
+
+    func update(
+        segment: CodeTextSegment,
+        onSelectionChanged: @escaping @MainActor @Sendable (DiffTextSelection?) -> Void
+    ) {
+        self.segment = segment
+        self.selectionHandler = onSelectionChanged
+        textView.segment = segment
+        textView.selectionRangeChanged = { [weak self] range in
+            guard let self, let segment = self.segment else { return }
+            let selection = segment.selection(for: range)
+            Task { @MainActor in
+                self.selectionHandler?(selection)
+            }
+        }
+        textView.textStorage?.setAttributedString(Self.attributedString(for: segment))
+        gutterView.segment = segment
+        gutterView.textView = textView
+        needsLayout = true
+        invalidateIntrinsicContentSize()
+    }
+
+    func fittingSize(for proposedWidth: CGFloat?) -> CGSize {
+        applyLayout(proposedWidth: proposedWidth, updatingFrames: false)
+    }
+
+    override func layout() {
+        super.layout()
+        _ = applyLayout(proposedWidth: bounds.width, updatingFrames: true)
+    }
+
+    private func setUpViews() {
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = false
-        scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = false
         scrollView.verticalScrollElasticity = .none
-        scrollView.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        scrollView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        scrollView.documentView = textView
 
-        let textView = InteractiveDiffTextView(frame: .zero)
         textView.isEditable = false
         textView.isSelectable = true
         textView.isVerticallyResizable = true
         textView.drawsBackground = false
-        textView.textContainerInset = NSSize(width: 0, height: 10)
         textView.usesFindBar = true
         textView.allowsUndo = false
         textView.isRichText = true
         textView.importsGraphics = false
-        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        textView.textContainer?.lineFragmentPadding = 0
-        textView.hiddenContextDelegate = context.coordinator
+        textView.textContainerInset = NSSize(width: 0, height: CodeSurfaceMetrics.textVerticalInset)
+        textView.textContainer?.lineFragmentPadding = CodeSurfaceMetrics.textHorizontalPadding
 
-        scrollView.onContentWidthChange = { [weak scrollView, weak textView] in
-            guard let scrollView, let textView else { return }
-            Self.remeasure(scrollView: scrollView, textView: textView)
-        }
-        scrollView.documentView = textView
-        update(scrollView: scrollView, textView: textView, coordinator: context.coordinator)
-        return scrollView
+        addSubview(gutterView)
+        addSubview(scrollView)
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard
-            let textView = scrollView.documentView as? InteractiveDiffTextView
-        else { return }
-        context.coordinator.onExpandHiddenContext = onExpandHiddenContext
-        textView.hiddenContextDelegate = context.coordinator
-        update(scrollView: scrollView, textView: textView, coordinator: context.coordinator)
-    }
-
-    private func update(scrollView: NSScrollView, textView: InteractiveDiffTextView, coordinator: Coordinator) {
-        let renderState = makeAttributedString()
-        textView.textStorage?.setAttributedString(renderState.attributedString)
-        textView.hiddenActionRanges = renderState.hiddenActionRanges
-        textView.selectableRanges = renderState.selectableRanges
-        scrollView.hasHorizontalScroller = !surface.wrapsLines
-
-        if let textContainer = textView.textContainer {
-            if surface.wrapsLines {
-                textContainer.widthTracksTextView = true
-                textContainer.containerSize = NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
-                textView.isHorizontallyResizable = false
-                textView.autoresizingMask = [.width]
-            } else {
-                textContainer.widthTracksTextView = false
-                textContainer.containerSize = NSSize(
-                    width: CGFloat.greatestFiniteMagnitude,
-                    height: CGFloat.greatestFiniteMagnitude
-                )
-                textView.isHorizontallyResizable = true
-                textView.autoresizingMask = []
-            }
+    private func applyLayout(proposedWidth: CGFloat?, updatingFrames: Bool) -> CGSize {
+        guard let segment, let textContainer = textView.textContainer else {
+            return NSSize(width: proposedWidth ?? 0, height: CodeSurfaceMetrics.minimumHeight)
         }
 
-        textView.minSize = NSSize(width: 0, height: 0)
-        textView.maxSize = NSSize(
-            width: CGFloat.greatestFiniteMagnitude,
-            height: CGFloat.greatestFiniteMagnitude
-        )
-        Self.remeasure(scrollView: scrollView, textView: textView)
-        scrollView.contentView.scroll(to: .zero)
-        scrollView.reflectScrolledClipView(scrollView.contentView)
-    }
+        let gutterWidth = Self.gutterWidth(for: segment)
+        let proposedTotalWidth = max(proposedWidth ?? gutterWidth + CodeSurfaceMetrics.minimumHeight, gutterWidth + 1)
+        let availableTextWidth = max(proposedTotalWidth - gutterWidth, 1)
 
-    private static func remeasure(scrollView: NSScrollView, textView: InteractiveDiffTextView) {
-        guard let textContainer = textView.textContainer else {
-            scrollView.invalidateIntrinsicContentSize()
-            return
-        }
-
-        let targetWidth: CGFloat
-        if textContainer.widthTracksTextView {
-            targetWidth = max(scrollView.contentSize.width, 1)
-            textContainer.containerSize = NSSize(width: targetWidth, height: .greatestFiniteMagnitude)
-            textView.setFrameSize(NSSize(width: targetWidth, height: max(textView.frame.height, 48)))
+        if segment.wrapsLines {
+            textContainer.widthTracksTextView = true
+            textContainer.containerSize = NSSize(width: availableTextWidth, height: .greatestFiniteMagnitude)
+            textView.isHorizontallyResizable = false
+            scrollView.hasHorizontalScroller = false
         } else {
-            targetWidth = max(textView.frame.width, scrollView.contentSize.width)
+            textContainer.widthTracksTextView = false
+            textContainer.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+            textView.isHorizontallyResizable = true
+            scrollView.hasHorizontalScroller = true
         }
 
-        textView.sizeToFit()
-        let contentHeight = measuredContentHeight(for: textView)
-        textView.setFrameSize(
-            NSSize(
-                width: targetWidth,
-                height: contentHeight
+        textView.setFrameSize(NSSize(width: availableTextWidth, height: max(textView.frame.height, CodeSurfaceMetrics.minimumHeight)))
+        textView.layoutManager?.ensureLayout(for: textContainer)
+
+        let contentWidth = max(Self.contentWidth(for: textView), availableTextWidth)
+        let contentHeight = max(Self.contentHeight(for: textView), CodeSurfaceMetrics.minimumHeight)
+        let textWidth = segment.wrapsLines ? availableTextWidth : contentWidth
+        let scrollerHeight = scrollView.hasHorizontalScroller ? Self.horizontalScrollerHeight(for: scrollView) : 0
+        let totalHeight = max(contentHeight + scrollerHeight, CodeSurfaceMetrics.minimumHeight)
+
+        if updatingFrames {
+            gutterView.frame = NSRect(x: 0, y: 0, width: gutterWidth, height: totalHeight)
+            scrollView.frame = NSRect(
+                x: gutterWidth,
+                y: 0,
+                width: max(bounds.width - gutterWidth, 1),
+                height: totalHeight
             )
-        )
-        scrollView.invalidateIntrinsicContentSize()
-    }
+            textView.setFrameSize(NSSize(width: textWidth, height: contentHeight))
 
-    private static func measuredContentHeight(for textView: NSTextView) -> CGFloat {
-        guard
-            let layoutManager = textView.layoutManager,
-            let textContainer = textView.textContainer
-        else {
-            return max(textView.fittingSize.height, 48)
+            let currentOrigin = scrollView.contentView.bounds.origin
+            let maxHorizontalOffset = max(textWidth - scrollView.contentSize.width, 0)
+            scrollView.contentView.scroll(
+                to: NSPoint(x: min(currentOrigin.x, maxHorizontalOffset), y: 0)
+            )
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            gutterView.needsDisplay = true
         }
 
-        layoutManager.ensureLayout(for: textContainer)
-        let usedRect = layoutManager.usedRect(for: textContainer)
-        return max(ceil(usedRect.height + (textView.textContainerInset.height * 2)), 48)
+        return NSSize(width: proposedTotalWidth, height: totalHeight)
     }
 
-    private func makeAttributedString() -> RenderState {
+    private static func attributedString(for segment: CodeTextSegment) -> NSAttributedString {
         let full = NSMutableAttributedString()
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = surface.wrapsLines ? .byWordWrapping : .byClipping
-        var actionRanges: [(HiddenContextInteraction, NSRange)] = []
-        var selectableRanges: [NSRange] = []
-        var location = 0
+        paragraph.lineBreakMode = segment.wrapsLines ? .byWordWrapping : .byClipping
 
-        for (index, row) in surface.rows.enumerated() {
-            let prefix = gutterPrefix(for: row)
+        for (index, line) in segment.lines.enumerated() {
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .font: codeFont(),
                 .foregroundColor: NSColor.labelColor,
-                .paragraphStyle: paragraph,
-                .backgroundColor: backgroundColor(for: row.backgroundStyle)
+                .paragraphStyle: paragraph
             ]
             let mutableLine = NSMutableAttributedString(
-                string: prefix + (row.text.isEmpty ? " " : row.text),
+                string: line.row.text.isEmpty ? " " : line.row.text,
                 attributes: attributes
             )
 
-            let gutterRange = NSRange(location: 0, length: prefix.count)
-            mutableLine.addAttributes([
-                .foregroundColor: NSColor.secondaryLabelColor
-            ], range: gutterRange)
-
-            switch row.kind {
-            case .code:
-                let codeStart = location + prefix.utf16.count
-                let codeLength = max((row.text.isEmpty ? " " : row.text).utf16.count, 1)
-                selectableRanges.append(NSRange(location: codeStart, length: codeLength))
-                for span in row.syntaxSpans {
-                    let shiftedRange = NSRange(location: prefix.count + span.range.lowerBound, length: span.range.count)
-                    guard shiftedRange.location + shiftedRange.length <= mutableLine.length else { continue }
-                    mutableLine.addAttributes([
-                        .foregroundColor: syntaxColor(for: span.role)
-                    ], range: shiftedRange)
-                }
-            case let .hiddenContext(block):
-                mutableLine.mutableString.setString(prefix)
-                let baseAttributes = attributes.merging([
-                    .foregroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.96)
-                ]) { _, new in new }
-
-                for control in row.hiddenContextControls {
-                    let start = mutableLine.length
-                    let token: String
-                    let tokenAttributes: [NSAttributedString.Key: Any]
-
-                    switch control.action {
-                    case .expandUp, .expandDown:
-                        token = " \(control.title) "
-                        tokenAttributes = baseAttributes.merging([
-                            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-                            .backgroundColor: hiddenBarFillColor()
-                        ]) { _, new in new }
-                    case .expandAll:
-                        token = "  \(control.title)  "
-                        tokenAttributes = baseAttributes.merging([
-                            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-                            .backgroundColor: hiddenBarFillColor()
-                        ]) { _, new in new }
-                    }
-
-                    mutableLine.append(NSAttributedString(string: token, attributes: tokenAttributes))
-                    let range = NSRange(location: location + start, length: token.utf16.count)
-                    actionRanges.append((HiddenContextInteraction(block: block, action: control.action), range))
-                    mutableLine.append(NSAttributedString(string: " ", attributes: baseAttributes))
-                }
+            for span in line.row.syntaxSpans {
+                let shiftedRange = NSRange(location: span.range.lowerBound, length: span.range.count)
+                guard shiftedRange.location + shiftedRange.length <= mutableLine.length else { continue }
+                mutableLine.addAttributes([
+                    .foregroundColor: syntaxColor(for: span.role)
+                ], range: shiftedRange)
             }
 
             full.append(mutableLine)
-            location += mutableLine.length
-            if index < surface.rows.count - 1 {
-                full.append(NSAttributedString(string: "\n"))
-                if case .code = row.kind {
-                    selectableRanges.append(NSRange(location: location, length: 1))
-                }
-                location += 1
+            if index < segment.lines.count - 1 {
+                full.append(NSAttributedString(string: "\n", attributes: attributes))
             }
         }
 
-        return RenderState(
-            attributedString: full,
-            hiddenActionRanges: actionRanges,
-            selectableRanges: selectableRanges
-        )
+        return full
     }
 
-    private func gutterPrefix(for row: DiffRenderableRow) -> String {
-        if row.isInlineHiddenContextControl {
-            return "  "
-        }
-        let oldNumber = row.oldLineNumber.map { String(format: "%4d", $0) } ?? "    "
-        let newNumber = row.newLineNumber.map { String(format: "%4d", $0) } ?? "    "
-        return "\(oldNumber) \(newNumber)  "
+    private static func codeFont() -> NSFont {
+        NSFont.monospacedSystemFont(ofSize: CodeSurfaceMetrics.fontSize, weight: .regular)
     }
 
-    private func backgroundColor(for style: DiffBackgroundStyle) -> NSColor {
-        switch style {
-        case .neutral:
-            return .clear
-        case .addition:
-            return NSColor.systemGreen.withAlphaComponent(0.12)
-        case .deletion:
-            return NSColor.systemRed.withAlphaComponent(0.12)
-        case .hidden:
-            return .clear
-        }
-    }
-
-    private func hiddenBarFillColor() -> NSColor {
-        NSColor(white: 0.26, alpha: 1)
-    }
-
-    private func syntaxColor(for role: SyntaxRole) -> NSColor {
+    private static func syntaxColor(for role: SyntaxRole) -> NSColor {
         switch role {
         case .keyword:
             return NSColor.systemOrange
@@ -414,137 +427,453 @@ private struct MacCodeTextSurfaceView: NSViewRepresentable {
         }
     }
 
-    @MainActor
-    final class Coordinator: NSObject, HiddenContextTextViewDelegate {
-        fileprivate var onExpandHiddenContext: @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void
-
-        init(onExpandHiddenContext: @escaping @MainActor @Sendable (HiddenContextBlock, HiddenContextAction) -> Void) {
-            self.onExpandHiddenContext = onExpandHiddenContext
-        }
-
-        func expandHiddenContext(_ interaction: HiddenContextInteraction) {
-            onExpandHiddenContext(interaction.block, interaction.action)
-        }
+    private static func gutterWidth(for segment: CodeTextSegment) -> CGFloat {
+        let sample = String(repeating: "8", count: segment.gutterDigits) + " " + String(repeating: "8", count: segment.gutterDigits)
+        let sampleWidth = (sample as NSString).size(withAttributes: [.font: codeFont()]).width
+        return ceil(sampleWidth + CodeSurfaceMetrics.gutterLeadingPadding + CodeSurfaceMetrics.gutterTrailingPadding)
     }
 
-    private struct RenderState {
-        let attributedString: NSAttributedString
-        let hiddenActionRanges: [(HiddenContextInteraction, NSRange)]
-        let selectableRanges: [NSRange]
+    private static func contentWidth(for textView: NSTextView) -> CGFloat {
+        guard
+            let layoutManager = textView.layoutManager,
+            let textContainer = textView.textContainer
+        else {
+            return max(textView.fittingSize.width, CodeSurfaceMetrics.minimumHeight)
+        }
+
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        return ceil(usedRect.width + (textContainer.lineFragmentPadding * 2))
     }
 
-    fileprivate struct HiddenContextInteraction {
-        let block: HiddenContextBlock
-        let action: HiddenContextAction
+    private static func contentHeight(for textView: NSTextView) -> CGFloat {
+        guard
+            let layoutManager = textView.layoutManager,
+            let textContainer = textView.textContainer
+        else {
+            return max(textView.fittingSize.height, CodeSurfaceMetrics.minimumHeight)
+        }
+
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        return ceil(usedRect.height + (textView.textContainerInset.height * 2))
+    }
+
+    private static func horizontalScrollerHeight(for scrollView: NSScrollView) -> CGFloat {
+        NSScroller.scrollerWidth(for: .regular, scrollerStyle: scrollView.scrollerStyle)
     }
 }
 
-@MainActor
-private protocol HiddenContextTextViewDelegate: AnyObject {
-    func expandHiddenContext(_ interaction: MacCodeTextSurfaceView.HiddenContextInteraction)
-}
+private final class MacSelectableCodeTextView: NSTextView {
+    var segment: CodeTextSegment?
+    var selectionRangeChanged: ((NSRange) -> Void)?
 
-private final class InteractiveDiffTextView: NSTextView {
-    weak var hiddenContextDelegate: (any HiddenContextTextViewDelegate)?
-    var hiddenActionRanges: [(MacCodeTextSurfaceView.HiddenContextInteraction, NSRange)] = []
-    var selectableRanges: [NSRange] = []
+    override func drawBackground(in rect: NSRect) {
+        drawLineBackgrounds()
+        super.drawBackground(in: rect)
+    }
 
-    override func mouseDown(with event: NSEvent) {
-        guard let interaction = clickedHiddenContextInteraction(for: event) else {
-            super.mouseDown(with: event)
+    override func setSelectedRanges(
+        _ ranges: [NSValue],
+        affinity: NSSelectionAffinity,
+        stillSelecting stillSelectingFlag: Bool
+    ) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
+        selectionRangeChanged?(selectedRange())
+    }
+
+    override func copy(_ sender: Any?) {
+        guard let segment else {
+            super.copy(sender)
             return
         }
 
-        let downPoint = convert(event.locationInWindow, from: nil)
-        guard let nextEvent = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else {
-            hiddenContextDelegate?.expandHiddenContext(interaction)
+        let selectedText = segment.sanitizedText(in: selectedRange())
+        guard selectedRange().length > 0 else {
+            super.copy(sender)
             return
         }
 
-        switch nextEvent.type {
-        case .leftMouseDragged:
-            super.mouseDown(with: event)
-        case .leftMouseUp:
-            let upPoint = convert(nextEvent.locationInWindow, from: nil)
-            if hypot(upPoint.x - downPoint.x, upPoint.y - downPoint.y) < 4 {
-                hiddenContextDelegate?.expandHiddenContext(interaction)
-            } else {
-                super.mouseDown(with: event)
-            }
-        default:
-            super.mouseDown(with: event)
-        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(selectedText, forType: .string)
     }
 
-    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
-        let clampedRanges = ranges.compactMap { value in
-            clampSelectionRange(value.rangeValue)
-        }
-        let finalRanges = clampedRanges.isEmpty ? [NSValue(range: NSRange(location: 0, length: 0))] : clampedRanges.map(NSValue.init)
-        super.setSelectedRanges(finalRanges, affinity: affinity, stillSelecting: stillSelectingFlag)
-    }
-
-    private func clickedHiddenContextInteraction(for event: NSEvent) -> MacCodeTextSurfaceView.HiddenContextInteraction? {
+    func rect(for line: CodeTextSegment.Line) -> NSRect? {
         guard
             let layoutManager,
             let textContainer
-        else { return nil }
-
-        let point = convert(event.locationInWindow, from: nil)
-        let containerPoint = NSPoint(
-            x: point.x - textContainerInset.width,
-            y: point.y - textContainerInset.height
-        )
-        let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: textContainer)
-        let characterIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
-        return hiddenActionRanges.first(where: { NSLocationInRange(characterIndex, $0.1) })?.0
-    }
-
-    private func clampSelectionRange(_ proposedRange: NSRange) -> NSRange? {
-        guard proposedRange.length > 0 else { return proposedRange }
-
-        var lowerBound = Int.max
-        var upperBound = Int.min
-
-        for allowedRange in selectableRanges {
-            let intersection = NSIntersectionRange(proposedRange, allowedRange)
-            guard intersection.length > 0 else { continue }
-            lowerBound = min(lowerBound, intersection.location)
-            upperBound = max(upperBound, intersection.location + intersection.length)
+        else {
+            return nil
         }
 
-        guard lowerBound != Int.max, upperBound > lowerBound else { return nil }
-        return NSRange(location: lowerBound, length: upperBound - lowerBound)
+        layoutManager.ensureLayout(for: textContainer)
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: line.displayRange, actualCharacterRange: nil)
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        rect.origin.x += textContainerInset.width
+        rect.origin.y += textContainerInset.height
+        return rect.integral
+    }
+
+    private func drawLineBackgrounds() {
+        guard let segment else { return }
+
+        for line in segment.lines {
+            guard let lineRect = rect(for: line) else { continue }
+            let backgroundRect = NSRect(x: 0, y: lineRect.minY, width: bounds.width, height: lineRect.height)
+            Self.backgroundColor(for: line.row.backgroundStyle).setFill()
+            backgroundRect.fill()
+        }
+    }
+
+    fileprivate static func backgroundColor(for style: DiffBackgroundStyle) -> NSColor {
+        switch style {
+        case .neutral:
+            return .clear
+        case .addition:
+            return NSColor.systemGreen.withAlphaComponent(0.12)
+        case .deletion:
+            return NSColor.systemRed.withAlphaComponent(0.12)
+        case .hidden:
+            return .clear
+        }
     }
 }
 
-private final class IntrinsicHeightScrollView: NSScrollView {
-    var onContentWidthChange: (() -> Void)?
-    private var lastObservedContentWidth = CGFloat.nan
+private final class MacCodeTextGutterView: NSView {
+    weak var textView: MacSelectableCodeTextView?
+    var segment: CodeTextSegment? {
+        didSet {
+            needsDisplay = true
+        }
+    }
 
-    override func layout() {
-        super.layout()
+    override func draw(_ dirtyRect: NSRect) {
+        guard let segment, let textView else { return }
 
-        let contentWidth = contentSize.width
-        guard lastObservedContentWidth.isNaN || abs(contentWidth - lastObservedContentWidth) > 0.5 else {
+        let font = NSFont.monospacedSystemFont(ofSize: CodeSurfaceMetrics.fontSize, weight: .regular)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]
+
+        for line in segment.lines {
+            guard let lineRect = textView.rect(for: line) else { continue }
+            let backgroundRect = NSRect(x: 0, y: lineRect.minY, width: bounds.width, height: lineRect.height)
+            MacSelectableCodeTextView.backgroundColor(for: line.row.backgroundStyle).setFill()
+            backgroundRect.fill()
+
+            let label = segment.gutterText(for: line.row)
+            let textSize = (label as NSString).size(withAttributes: attributes)
+            let drawPoint = NSPoint(
+                x: bounds.width - CodeSurfaceMetrics.gutterTrailingPadding - textSize.width,
+                y: lineRect.minY + max((lineRect.height - textSize.height) * 0.5, 0)
+            )
+            (label as NSString).draw(at: drawPoint, withAttributes: attributes)
+        }
+    }
+}
+#elseif canImport(UIKit)
+private struct UIKitCodeTextSegmentView: UIViewRepresentable {
+    let segment: CodeTextSegment
+    let onSelectionChanged: @MainActor @Sendable (DiffTextSelection?) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onSelectionChanged: onSelectionChanged)
+    }
+
+    func makeUIView(context: Context) -> UIKitCodeTextSegmentContainerView {
+        let view = UIKitCodeTextSegmentContainerView()
+        view.textView.delegate = context.coordinator
+        return view
+    }
+
+    func updateUIView(_ uiView: UIKitCodeTextSegmentContainerView, context: Context) {
+        context.coordinator.onSelectionChanged = onSelectionChanged
+        uiView.textView.delegate = context.coordinator
+        uiView.update(segment: segment)
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        uiView: UIKitCodeTextSegmentContainerView,
+        context: Context
+    ) -> CGSize? {
+        uiView.fittingSize(for: proposal.width)
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var onSelectionChanged: @MainActor @Sendable (DiffTextSelection?) -> Void
+
+        init(onSelectionChanged: @escaping @MainActor @Sendable (DiffTextSelection?) -> Void) {
+            self.onSelectionChanged = onSelectionChanged
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            guard
+                let textView = textView as? UIKitSelectableCodeTextView,
+                let segment = textView.segment
+            else { return }
+
+            let selection = segment.selection(for: textView.selectedRange)
+            Task { @MainActor in
+                onSelectionChanged(selection)
+            }
+        }
+    }
+}
+
+private final class UIKitCodeTextSegmentContainerView: UIView {
+    let gutterView = UIKitCodeTextGutterView()
+    let textView = UIKitSelectableCodeTextView()
+
+    private var segment: CodeTextSegment?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setUpViews()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func update(segment: CodeTextSegment) {
+        self.segment = segment
+        textView.segment = segment
+        textView.attributedText = Self.attributedString(for: segment)
+        gutterView.segment = segment
+        gutterView.textView = textView
+        setNeedsLayout()
+        invalidateIntrinsicContentSize()
+    }
+
+    override var intrinsicContentSize: CGSize {
+        fittingSize(for: bounds.width > 0 ? bounds.width : nil)
+    }
+
+    func fittingSize(for proposedWidth: CGFloat?) -> CGSize {
+        applyLayout(proposedWidth: proposedWidth, updatingFrames: false)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        _ = applyLayout(proposedWidth: bounds.width, updatingFrames: true)
+    }
+
+    private func setUpViews() {
+        addSubview(gutterView)
+        addSubview(textView)
+
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.backgroundColor = .clear
+        textView.textContainerInset = UIEdgeInsets(
+            top: CodeSurfaceMetrics.textVerticalInset,
+            left: 0,
+            bottom: CodeSurfaceMetrics.textVerticalInset,
+            right: 0
+        )
+        textView.textContainer.lineFragmentPadding = CodeSurfaceMetrics.textHorizontalPadding
+        textView.showsVerticalScrollIndicator = false
+        textView.alwaysBounceVertical = false
+        textView.autocorrectionType = .no
+        textView.smartDashesType = .no
+        textView.smartQuotesType = .no
+        textView.smartInsertDeleteType = .no
+        textView.textDragInteraction?.isEnabled = true
+    }
+
+    private func applyLayout(proposedWidth: CGFloat?, updatingFrames: Bool) -> CGSize {
+        guard let segment else {
+            return CGSize(width: proposedWidth ?? 0, height: CodeSurfaceMetrics.minimumHeight)
+        }
+
+        let gutterWidth = Self.gutterWidth(for: segment)
+        let proposedTotalWidth = max(proposedWidth ?? gutterWidth + CodeSurfaceMetrics.minimumHeight, gutterWidth + 1)
+        let availableTextWidth = max(proposedTotalWidth - gutterWidth, 1)
+
+        if segment.wrapsLines {
+            textView.isScrollEnabled = false
+            textView.showsHorizontalScrollIndicator = false
+            textView.textContainer.widthTracksTextView = true
+            textView.textContainer.size = CGSize(width: availableTextWidth, height: .greatestFiniteMagnitude)
+        } else {
+            textView.isScrollEnabled = true
+            textView.showsHorizontalScrollIndicator = true
+            textView.alwaysBounceHorizontal = true
+            textView.textContainer.widthTracksTextView = false
+            textView.textContainer.size = CGSize(width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        }
+
+        textView.frame = CGRect(x: gutterWidth, y: 0, width: availableTextWidth, height: max(textView.frame.height, CodeSurfaceMetrics.minimumHeight))
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+
+        let contentHeight = max(Self.contentHeight(for: textView), CodeSurfaceMetrics.minimumHeight)
+
+        if updatingFrames {
+            gutterView.frame = CGRect(x: 0, y: 0, width: gutterWidth, height: contentHeight)
+            textView.frame = CGRect(x: gutterWidth, y: 0, width: availableTextWidth, height: contentHeight)
+            gutterView.setNeedsDisplay()
+        }
+
+        return CGSize(width: proposedTotalWidth, height: contentHeight)
+    }
+
+    private static func attributedString(for segment: CodeTextSegment) -> NSAttributedString {
+        let full = NSMutableAttributedString()
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = segment.wrapsLines ? .byWordWrapping : .byClipping
+
+        for (index, line) in segment.lines.enumerated() {
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: codeFont(),
+                .foregroundColor: UIColor.label,
+                .paragraphStyle: paragraph
+            ]
+            let mutableLine = NSMutableAttributedString(
+                string: line.row.text.isEmpty ? " " : line.row.text,
+                attributes: attributes
+            )
+
+            for span in line.row.syntaxSpans {
+                let shiftedRange = NSRange(location: span.range.lowerBound, length: span.range.count)
+                guard shiftedRange.location + shiftedRange.length <= mutableLine.length else { continue }
+                mutableLine.addAttributes([
+                    .foregroundColor: syntaxColor(for: span.role)
+                ], range: shiftedRange)
+            }
+
+            full.append(mutableLine)
+            if index < segment.lines.count - 1 {
+                full.append(NSAttributedString(string: "\n", attributes: attributes))
+            }
+        }
+
+        return full
+    }
+
+    private static func codeFont() -> UIFont {
+        UIFont.monospacedSystemFont(ofSize: CodeSurfaceMetrics.fontSize, weight: .regular)
+    }
+
+    private static func syntaxColor(for role: SyntaxRole) -> UIColor {
+        switch role {
+        case .keyword:
+            return .systemOrange
+        case .string:
+            return .systemTeal
+        case .number:
+            return .systemPurple
+        case .comment:
+            return .secondaryLabel
+        case .type:
+            return .systemBlue
+        case .plain:
+            return .label
+        }
+    }
+
+    private static func gutterWidth(for segment: CodeTextSegment) -> CGFloat {
+        let sample = String(repeating: "8", count: segment.gutterDigits) + " " + String(repeating: "8", count: segment.gutterDigits)
+        let sampleWidth = (sample as NSString).size(withAttributes: [.font: codeFont()]).width
+        return ceil(sampleWidth + CodeSurfaceMetrics.gutterLeadingPadding + CodeSurfaceMetrics.gutterTrailingPadding)
+    }
+
+    private static func contentHeight(for textView: UITextView) -> CGFloat {
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        let usedRect = textView.layoutManager.usedRect(for: textView.textContainer)
+        return ceil(usedRect.height + textView.textContainerInset.top + textView.textContainerInset.bottom)
+    }
+}
+
+private final class UIKitSelectableCodeTextView: UITextView {
+    var segment: CodeTextSegment?
+
+    override func draw(_ rect: CGRect) {
+        drawLineBackgrounds()
+        super.draw(rect)
+    }
+
+    override func copy(_ sender: Any?) {
+        guard let segment else {
+            super.copy(sender)
             return
         }
 
-        lastObservedContentWidth = contentWidth
-        onContentWidthChange?()
+        guard selectedRange.length > 0 else {
+            super.copy(sender)
+            return
+        }
+
+        UIPasteboard.general.string = segment.sanitizedText(in: selectedRange)
     }
 
-    override var intrinsicContentSize: NSSize {
-        guard let documentView else {
-            return NSSize(width: NSView.noIntrinsicMetric, height: 48)
-        }
+    func rect(for line: CodeTextSegment.Line) -> CGRect? {
+        layoutManager.ensureLayout(for: textContainer)
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: line.displayRange, actualCharacterRange: nil)
+        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        rect.origin.x += textContainerInset.left
+        rect.origin.y += textContainerInset.top
+        return rect.integral
+    }
 
-        var height = max(documentView.fittingSize.height, 48)
-        if hasHorizontalScroller {
-            height += horizontalScroller?.frame.height ?? 0
-        }
+    private func drawLineBackgrounds() {
+        guard let segment else { return }
 
-        return NSSize(width: NSView.noIntrinsicMetric, height: height)
+        for line in segment.lines {
+            guard let lineRect = rect(for: line) else { continue }
+            let backgroundRect = CGRect(x: 0, y: lineRect.minY, width: bounds.width, height: lineRect.height)
+            Self.backgroundColor(for: line.row.backgroundStyle).setFill()
+            UIRectFill(backgroundRect)
+        }
+    }
+
+    fileprivate static func backgroundColor(for style: DiffBackgroundStyle) -> UIColor {
+        switch style {
+        case .neutral:
+            return .clear
+        case .addition:
+            return UIColor.systemGreen.withAlphaComponent(0.12)
+        case .deletion:
+            return UIColor.systemRed.withAlphaComponent(0.12)
+        case .hidden:
+            return .clear
+        }
+    }
+}
+
+private final class UIKitCodeTextGutterView: UIView {
+    weak var textView: UIKitSelectableCodeTextView?
+    var segment: CodeTextSegment? {
+        didSet {
+            setNeedsDisplay()
+        }
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard let segment, let textView else { return }
+
+        let font = UIFont.monospacedSystemFont(ofSize: CodeSurfaceMetrics.fontSize, weight: .regular)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: UIColor.secondaryLabel
+        ]
+
+        for line in segment.lines {
+            guard let lineRect = textView.rect(for: line) else { continue }
+            let backgroundRect = CGRect(x: 0, y: lineRect.minY, width: bounds.width, height: lineRect.height)
+            UIKitSelectableCodeTextView.backgroundColor(for: line.row.backgroundStyle).setFill()
+            UIRectFill(backgroundRect)
+
+            let label = segment.gutterText(for: line.row)
+            let textSize = (label as NSString).size(withAttributes: attributes)
+            let drawPoint = CGPoint(
+                x: bounds.width - CodeSurfaceMetrics.gutterTrailingPadding - textSize.width,
+                y: lineRect.minY + max((lineRect.height - textSize.height) * 0.5, 0)
+            )
+            (label as NSString).draw(at: drawPoint, withAttributes: attributes)
+        }
     }
 }
 #endif

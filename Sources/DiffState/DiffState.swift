@@ -20,10 +20,44 @@ public struct DiffDisplayOptions: Hashable, Codable, Sendable {
 public struct DiffSelection: Hashable, Codable, Sendable {
     public var fileID: DiffFile.ID
     public var lineID: String?
+    public var textSelection: DiffTextSelection?
 
-    public init(fileID: DiffFile.ID, lineID: String? = nil) {
+    public init(
+        fileID: DiffFile.ID,
+        lineID: String? = nil,
+        textSelection: DiffTextSelection? = nil
+    ) {
         self.fileID = fileID
-        self.lineID = lineID
+        self.lineID = lineID ?? textSelection?.anchor.rowID
+        self.textSelection = textSelection
+    }
+}
+
+public struct DiffTextSelection: Hashable, Codable, Sendable {
+    public enum Surface: String, Hashable, Codable, Sendable {
+        case unified
+        case left
+        case right
+    }
+
+    public struct Position: Hashable, Codable, Sendable {
+        public var rowID: String
+        public var utf16Offset: Int
+
+        public init(rowID: String, utf16Offset: Int) {
+            self.rowID = rowID
+            self.utf16Offset = utf16Offset
+        }
+    }
+
+    public var surface: Surface
+    public var anchor: Position
+    public var focus: Position
+
+    public init(surface: Surface, anchor: Position, focus: Position) {
+        self.surface = surface
+        self.anchor = anchor
+        self.focus = focus
     }
 }
 

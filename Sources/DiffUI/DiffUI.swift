@@ -199,6 +199,19 @@ public struct DiffSurfaceView: View {
             callbacks.onHiddenContextExpanded?(hiddenBlock.id)
         }
 
+        let selectionChanged: @MainActor @Sendable (CodeTextSurfaceModel, DiffTextSelection?) -> Void = { surface, textSelection in
+            let selection = textSelection.map {
+                DiffSelection(
+                    fileID: rendered.file.id,
+                    lineID: $0.anchor.rowID,
+                    textSelection: $0
+                )
+            }
+
+            controller.selection = selection
+            callbacks.onSelectionChanged?(selection)
+        }
+
         ForEach(rendered.output.blocks) { block in
             switch block.kind {
             case let .header(text):
@@ -208,7 +221,11 @@ public struct DiffSurfaceView: View {
                     .padding(.horizontal, 16)
             case .textSurface:
                 ForEach(rendered.output.surfaces.filter { $0.fileID == rendered.file.id }) { surface in
-                    renderer.render(surface: surface, onExpandHiddenContext: expandHiddenContext)
+                    renderer.render(
+                        surface: surface,
+                        onSelectionChanged: { selectionChanged(surface, $0) },
+                        onExpandHiddenContext: expandHiddenContext
+                    )
                         .onAppear {
                             viewportTracker?.updateViewport(fileID: rendered.file.id, anchorRowID: surface.rows.first?.id)
                         }

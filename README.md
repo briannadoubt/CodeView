@@ -14,7 +14,7 @@
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/briannadoubt/CodeView.git", branch: "main")
+    .package(url: "https://github.com/briannadoubt/CodeView.git", from: "0.1.0")
 ]
 ```
 
